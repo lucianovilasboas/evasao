@@ -31,6 +31,8 @@ import json
 import os
 import re
 import sys
+import shutil
+import tempfile
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -398,6 +400,59 @@ def montar_meta(registros: list[dict], excluidos: list[dict], cursos: list[dict]
     }
 
 
+def gravar_outputs(registros: list[dict], meta: dict) -> None:
+    """Prepara os dois JSON antes de publicar; restaura a base se a 2ª troca falhar.
+
+    Cada rename é atômico no mesmo filesystem, mas o par não é uma transação
+    contra encerramento abrupto do processo ou escritores concorrentes.
+    """
+    os.makedirs(SAIDA, exist_ok=True)
+    base = os.path.join(SAIDA, "base_temporal.json")
+    destino_meta = os.path.join(SAIDA, "meta.json")
+    temporarios: list[str] = []
+    backup = None
+    preservar_backup = False
+    try:
+        for nome, dados, indent, separators in (
+            ("base_temporal.json", registros, None, (",", ":")),
+            ("meta.json", meta, 2, None),
+        ):
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SAIDA,
+                                             prefix=f".{nome}.", delete=False) as fh:
+                temporarios.append(fh.name)
+                json.dump(dados, fh, ensure_ascii=False, indent=indent, separators=separators)
+                fh.flush()
+                os.fsync(fh.fileno())
+            # Mantém o comportamento de permissões do upload no container.
+            try:
+                os.chmod(fh.name, 0o666)
+            except OSError:
+                pass
+        if os.path.exists(base):
+            fd, backup = tempfile.mkstemp(dir=SAIDA, prefix=".base_temporal.backup.")
+            os.close(fd)
+            shutil.copy2(base, backup)
+        os.replace(temporarios[0], base)
+        try:
+            os.replace(temporarios[1], destino_meta)
+        except OSError:
+            try:
+                if backup is not None:
+                    os.replace(backup, base)
+                else:
+                    os.unlink(base)
+            except OSError as exc:
+                preservar_backup = True
+                raise RuntimeError(f"Falha no rollback da base; backup preservado em {backup}: {exc}") from exc
+            raise
+    finally:
+        for caminho in temporarios + ([backup] if backup and not preservar_backup else []):
+            try:
+                os.unlink(caminho)
+            except FileNotFoundError:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selftest", action="store_true", help="roda o gate de reprodução do relatório")
@@ -416,7 +471,7 @@ def main() -> int:
     for caminho in arquivos:
         nome = os.path.basename(caminho)
         cfg = mapeamentos.get(nome) or {}
-        classes_custom = cfg.get("classes") or None
+        classes_custom = cfg.get("classes")
         regs, info = processar_planilha(caminho, classes_custom)
         for r in regs:
             r["id"] = f"{r['campus'][:3].upper()}-{r['id']}" if r["campus"] else r["id"]
@@ -445,27 +500,19 @@ def main() -> int:
                        [os.path.basename(f) for f in arquivos])
     meta["arquivos"] = arquivos_info
 
-    os.makedirs(SAIDA, exist_ok=True)
-    with open(os.path.join(SAIDA, "base_temporal.json"), "w", encoding="utf-8") as fh:
-        json.dump(todos, fh, ensure_ascii=False, separators=(",", ":"))
-    with open(os.path.join(SAIDA, "meta.json"), "w", encoding="utf-8") as fh:
-        json.dump(meta, fh, ensure_ascii=False, indent=2)
-
-    # Deixa os arquivos graváveis pelo usuário do host (upload roda como conteiner).
-    for nome in ("base_temporal.json", "meta.json"):
-        try:
-            os.chmod(os.path.join(SAIDA, nome), 0o666)
-        except OSError:
-            pass
+    # A validação geral é obrigatória; --selftest acrescenta a referência PN
+    # quando aplicável. Nenhuma saída ativa é alterada se o gate falhar.
+    from etl.validacao import validar
+    code = validar(todos, meta, comparar_referencia=args.selftest)
+    if code != 0:
+        return code
+    gravar_outputs(todos, meta)
 
     print(f"[ok] {len(todos)} estudantes | {sum(1 for r in todos if r['saida'])} saídas | "
           f"{len(excluidos_todos)} excluídos temporalmente")
     print(f"[ok] campi: {', '.join(meta['campi'])}")
     print(f"[ok] gravado dados/base_temporal.json e dados/meta.json")
 
-    if args.selftest:
-        from etl.validacao import validar
-        return validar(todos, meta)
     return 0
 
 

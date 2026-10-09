@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Gate de validação do ETL.
 
-Confere que o modelo derivado da planilha bruta reproduz, para o Campus Ponte
-Nova, os números do ``Relatorio_Evasao_IFMG_PN_.xlsx``. O gate é escopado no
-campus de referência para continuar válido quando outros campi forem
-adicionados via upload.
+Confere contagens, consistência temporal e classificação de todos os campi.
+Opcionalmente compara Ponte Nova com ``Relatorio_Evasao_IFMG_PN_.xlsx`` quando
+esse campus está presente e todas as suas fontes usam o mapeamento padrão.
 
 Também pode ser executado isoladamente:
 
@@ -15,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,42 +53,109 @@ def _agregar(registros: list[dict], grupo: str, campus: str) -> dict[str, dict]:
     return acc
 
 
-def validar(registros: list[dict], meta: dict) -> int:
+def _validar_geral(registros: list[dict], meta: dict, ok) -> None:
+    """Recalcula os totais sem depender de nenhum campus de referência."""
+    por_campus: dict[str, dict] = {}
+    classes = Counter()
+    saidas = {"evasao", "cancelamento", "transferencia"}
+    for indice, r in enumerate(registros, 1):
+        nome = f"registro {indice} ({r.get('campus', '?')})"
+        ok(f"{nome} campus informado", bool(r["campus"].strip()), True)
+        ok(f"{nome} classe válida", r["classe"] in saidas | {"nao_saida"}, True)
+        ok(f"{nome} saída/classificação", r["saida"], r["classe"] in saidas)
+        ok(f"{nome} saída booleana", type(r["saida"]) is bool, True)
+        periodos = r["periodos"]
+        ok(f"{nome} períodos presentes", bool(periodos), True)
+        ok(f"{nome} tamanho do vínculo", r["vinculoPeriodos"], len(periodos))
+        ok(f"{nome} períodos únicos e ordenados", periodos, sorted(set(periodos)))
+        ok(f"{nome} última matrícula", periodos[-1] if periodos else None, r["ultimaMatricula"])
+        ok(f"{nome} periodicidade", r["periodicidade"] in {"anual", "semestral"}, True)
+        ok(f"{nome} grupo/periodicidade", r["periodicidade"],
+           "anual" if r["grupo"] == "integrados" else "semestral")
+        ok(f"{nome} formato dos períodos",
+           all(re.fullmatch(r"\d{4}\.[12]", p) is not None for p in periodos), True)
+        ultimo = re.fullmatch(r"(\d{4})\.([12])", r["ultimaMatricula"])
+        ok(f"{nome} formato última matrícula", ultimo is not None, True)
+        if ultimo:
+            ano, semestre = map(int, ultimo.groups())
+            inicio = (r["anoIngresso"], r["perIngresso"])
+            ok(f"{nome} semestre de ingresso", inicio[1] in (1, 2), True)
+            if r["periodicidade"] == "anual":
+                esperados = [f"{a}.1" for a in range(inicio[0], ano + 1)]
+            else:
+                esperados = [f"{a}.{s}" for a in range(inicio[0], ano + 1)
+                             for s in (1, 2) if inicio <= (a, s) <= (ano, semestre)]
+            ok(f"{nome} expansão temporal", periodos, esperados)
+        classes[r["classe"]] += 1
+        c = por_campus.setdefault(r["campus"], {"estudantes": 0, "saidas": 0, "grupos": {}})
+        c["estudantes"] += 1
+        c["saidas"] += int(r["saida"])
+        g = c["grupos"].setdefault(r["grupo"], {"estudantes": 0, "saidas": 0})
+        g["estudantes"] += 1
+        g["saidas"] += int(r["saida"])
+
+    v = meta["validacao"]
+    ok("total de válidos", v["validos"], len(registros))
+    ok("total de excluídos", v["excluidos"], len(v["detalheExcluidos"]))
+    ok("campi", meta["campi"], sorted(por_campus))
+    ok("contagens por campus e grupo", v["porCampus"], por_campus)
+
+    # As contagens por arquivo abrangem somente os registros temporalmente válidos.
+    arquivos = meta["arquivos"]
+    ok("fontes", sorted(a["arquivo"] for a in arquivos), sorted(meta["fontes"]))
+    for campo, esperado in (("estudantes", len(registros)),
+                            ("saidas", sum(r["saida"] for r in registros)),
+                            ("excluidos", len(v["detalheExcluidos"]))):
+        ok(f"total por arquivo/{campo}", sum(a[campo] for a in arquivos), esperado)
+    ok("campi por arquivo", sorted({c for a in arquivos for c in a["campi"]}), meta["campi"])
+    classes_arquivos = Counter()
+    for a in arquivos:
+        nome = a["arquivo"]
+        ok(f"{nome} situações pendentes", a["pendentes"], [])
+        cc = a["contagemClasses"]
+        ok(f"{nome} classes válidas", set(cc) <= saidas | {"nao_saida"}, True)
+        ok(f"{nome} contagem por classe", sum(cc.values()), a["estudantes"])
+        ok(f"{nome} saídas por classe", sum(cc.get(c, 0) for c in saidas), a["saidas"])
+        valores_classes = Counter()
+        for valor in a["valores"]:
+            valores_classes[valor["classe"]] += valor["contagem"]
+        ok(f"{nome} contagem das situações", dict(valores_classes), cc)
+        classes_arquivos.update(cc)
+    ok("classes de arquivos/registros", dict(classes_arquivos), dict(classes))
+
+
+def validar(registros: list[dict], meta: dict, comparar_referencia: bool = True) -> int:
     falhas: list[str] = []
 
     def ok(nome: str, obtido, esperado) -> None:
-        if obtido == esperado:
-            print(f"[ok] {nome}: {obtido}")
-        else:
+        # Evita milhares de linhas no log do upload; imprime apenas divergências.
+        if obtido != esperado:
             falhas.append(f"[FALHA] {nome}: obtido {obtido}, esperado {esperado}")
 
-    campus = _chave_campus(meta)
-    if not campus:
-        print(f"[FALHA] campus de referência '{CAMPUS_REF}' ausente na base")
-        print("\n[GATE] campus de referência ausente — ETL não validável.")
+    try:
+        _validar_geral(registros, meta, ok)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        falhas.append(f"[FALHA] estrutura de registros/metadados inválida: {exc}")
+    if falhas:
+        print("\n".join(falhas))
+        print(f"\n[GATE] {len(falhas)} divergência(s) na validação geral.")
         return 1
+    print("[ok] validação geral de todos os campi: contagens, vínculos e classificações")
 
-    # Se o campus de referência usa mapeamento próprio, a referência numérica do
-    # relatório (construída com o mapeamento padrão) não se aplica.
-    arq_ref = next(
-        (a for a in (meta.get("arquivos") or [])
-         if any(CAMPUS_REF in str(c).upper() for c in a.get("campi", []))),
-        None,
-    )
-    if arq_ref and arq_ref.get("mapeamentoExplicito"):
-        pendentes = arq_ref.get("pendentes") or []
-        print(f"[i] {CAMPUS_REF} usa mapeamento de saída próprio:")
-        for valor, classe in sorted((arq_ref.get("mapeamento") or {}).items()):
-            print(f"      {valor!r} -> {classe}")
-        if pendentes:
-            print(f"[FALHA] situações não classificadas em {CAMPUS_REF}: {pendentes}")
-            print("\n[GATE] há situações pendentes — classifique-as na importação.")
-            return 1
-        com_pendencia = [r for r in registros if r.get("classe") == "pendente"]
-        if com_pendencia:
-            print(f"[FALHA] {len(com_pendencia)} registro(s) com classe pendente na base")
-            return 1
-        print("[GATE] mapeamento próprio aplicado; referência numérica do relatório PN ignorada.")
+    campus = _chave_campus(meta)
+    if not comparar_referencia:
+        print("[i] comparação com o relatório PN não solicitada.")
+        return 0
+    if not campus:
+        print(f"[i] {CAMPUS_REF} ausente; referência numérica PN não aplicável.")
+        return 0
+
+    # Qualquer fonte PN com mapeamento próprio torna a referência inaplicável,
+    # inclusive quando outra planilha PN usa o padrão. Não olhar só a primeira.
+    fontes_pn = [a for a in meta["arquivos"]
+                 if any(CAMPUS_REF in str(c).upper() for c in a["campi"])]
+    if any(a.get("mapeamentoExplicito") for a in fontes_pn):
+        print("[i] PN usa mapeamento próprio; referência numérica ignorada (validação geral mantida).")
         return 0
 
     pn = meta["validacao"]["porCampus"][campus]

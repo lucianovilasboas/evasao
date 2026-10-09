@@ -39,15 +39,70 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    salvarMapeamento(arquivo, { coluna: insp.dados.coluna, classes: mapeamento })
+    const destino = path.join(BRUTOS, arquivo)
+    if (fs.existsSync(destino)) {
+      return NextResponse.json(
+        { error: "já existe uma planilha com esse nome na base; renomeie o novo arquivo" },
+        { status: 409 },
+      )
+    }
+    const arquivoMapeamentos = path.join(path.dirname(BRUTOS), "mapeamentos.json")
+    const mapeamentosAnteriores = fs.existsSync(arquivoMapeamentos)
+      ? fs.readFileSync(arquivoMapeamentos)
+      : null
+    let copiado = false
+    let mapeamentoAlterado = false
+    let removidoDoStaging = false
+    const rollback = () => {
+      const falhas: string[] = []
+      // Tenta ambas as restaurações, mesmo se uma delas falhar.
+      try {
+        if (copiado) {
+          if (removidoDoStaging) {
+            // Não sobrescreve um novo upload que tenha chegado ao staging.
+            fs.copyFileSync(destino, origem, fs.constants.COPYFILE_EXCL)
+          }
+          fs.unlinkSync(destino)
+        }
+      } catch (err) {
+        falhas.push(`planilha: ${String(err)}`)
+      }
+      try {
+        if (mapeamentoAlterado) {
+          if (mapeamentosAnteriores === null) {
+            if (fs.existsSync(arquivoMapeamentos)) fs.unlinkSync(arquivoMapeamentos)
+          } else {
+            fs.writeFileSync(arquivoMapeamentos, mapeamentosAnteriores)
+          }
+        }
+      } catch (err) {
+        falhas.push(`mapeamento: ${String(err)}`)
+      }
+      if (falhas.length) throw new Error(`falha no rollback da importação: ${falhas.join("; ")}`)
+    }
 
-    fs.mkdirSync(BRUTOS, { recursive: true })
-    fs.renameSync(origem, path.join(BRUTOS, arquivo))
-
-    const { code, log } = await executarEtl()
-    const meta = getMeta()
-    if (code !== 0) return NextResponse.json({ ok: false, arquivo, log }, { status: 422 })
-    return NextResponse.json({ ok: true, arquivo, log, meta })
+    let resultado: Awaited<ReturnType<typeof executarEtl>>
+    try {
+      fs.mkdirSync(BRUTOS, { recursive: true })
+      // COPYFILE_EXCL também protege da colisão entre a checagem e a cópia.
+      fs.copyFileSync(origem, destino, fs.constants.COPYFILE_EXCL)
+      copiado = true
+      mapeamentoAlterado = true // Inclusive se a escrita falhar parcialmente.
+      salvarMapeamento(arquivo, { coluna: insp.dados.coluna, classes: mapeamento })
+      fs.unlinkSync(origem)
+      removidoDoStaging = true
+      resultado = await executarEtl()
+    } catch (err) {
+      rollback()
+      throw err
+    }
+    const { code, log } = resultado
+    if (code !== 0) {
+      rollback()
+      return NextResponse.json({ ok: false, arquivo, log }, { status: 422 })
+    }
+    // Somente após o gate e a publicação dos JSON terem sido concluídos.
+    return NextResponse.json({ ok: true, arquivo, log, meta: getMeta() })
   } catch (err) {
     const msg = err instanceof Error ? err.message : "erro desconhecido"
     return NextResponse.json({ error: msg }, { status: 500 })

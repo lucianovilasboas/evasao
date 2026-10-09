@@ -15,7 +15,7 @@ Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · Recharts 3 �
 ```
 etl/                 # ETL Python: modela matrículas/saídas a partir do .xlsx bruto
   processar.py       # gera dados/base_temporal.json e dados/meta.json
-  validacao.py       # gate: reproduz o relatório PN (1451/132/107)
+  validacao.py       # validação geral multi-campus + referência PN quando aplicável
   gerar_mapa.py      # gera public/geo/mapa_mg.json (malha municipal de MG em SVG)
   inspecionar.py     # lê as situações de uma planilha (etapa de mapeamento)
 dados/
@@ -37,7 +37,7 @@ src/
 
 ```bash
 npm install
-npm run etl      # gera os JSON a partir de dados/brutos/*.xlsx (valida contra o relatório)
+npm run etl      # valida todos os campi e gera JSON; compara PN quando aplicável
 npm run dev      # http://localhost:3060
 ```
 
@@ -58,8 +58,25 @@ Modelo temporal:
 - A saída é atribuída uma única vez, ao último período do vínculo.
 - Registros com ingresso posterior à última matrícula são excluídos do modelo.
 
-O gate `etl/validacao.py` garante a reprodução do relatório PN: **1451 válidos,
-2 excluídos, Integrados 1186/132, Superiores 265/107** e as séries por período.
+O gate `etl/validacao.py` valida **todos os campi**, mesmo sem Ponte Nova:
+contagens de válidos/excluídos, totais por campus/grupo/arquivo, classes de saída
+e consistência dos vínculos temporais. Situações pendentes ou classes inválidas
+em qualquer campus impedem a publicação. Sem mapeamento explícito, permanece
+o comportamento histórico: situações desconhecidas são `nao_saida`.
+
+A validação geral roda sempre, inclusive sem `--selftest`. Essa opção acrescenta
+a comparação fixa com o relatório PN **somente quando PN está presente e nenhuma
+das planilhas que o contém usa mapeamento explícito**: **1451 válidos, 2 excluídos,
+Integrados 1186/132, Superiores 265/107**, além das séries por período existentes.
+Um mapeamento próprio em outro campus não desativa a referência PN.
+
+O ETL valida em memória **antes de escrever os JSON ativos**. Prepara ambos em
+temporários no diretório de saída e substitui cada arquivo por rename atômico;
+se a segunda troca falhar, restaura a base anterior (ou remove a primeira saída
+se não havia base). Erros de leitura ou validação preservam os JSON anteriores.
+Isso não é uma transação durável do par de arquivos: encerramento abrupto do
+processo, falha do próprio rollback e operações concorrentes continuam exigindo
+cuidado operacional. Não execute importações/reprocessamentos simultâneos.
 
 ### Adicionar outro campus
 
@@ -70,8 +87,11 @@ O gate `etl/validacao.py` garante a reprodução do relatório PN: **1451 válid
 2. **Mapeamento** — o sistema lê a coluna `Situação no Curso`, lista os valores
    distintos (com contagem) e **pré-classifica**; você ajusta quais situações
    contam como **saída**.
-3. **Confirmar** — salva o mapeamento, move o arquivo para `dados/brutos/` e
-   reprocessa o ETL. O campus aparece no seletor.
+3. **Confirmar** — salva o mapeamento, transfere o arquivo para `dados/brutos/` e
+   reprocessa o ETL. Em falha do ETL, restaura o mapeamento anterior e devolve a
+   planilha ao staging para correção/reenvio. Colisão com nome já existente na base
+   é rejeitada (HTTP 409), sem sobrescrever a planilha anterior: renomeie o novo
+   arquivo. O campus aparece no seletor somente após sucesso.
 
 A mesma aba lista as planilhas com botão **Mapeamento** (revisar/editar e
 reprocessar) e **Excluir**, além de editar **nome de exibição** e **observação**
@@ -153,11 +173,33 @@ Externo como saída) — que é o que reproduz o Relatório de Ponte Nova. Situa
 mapeadas caem em “não saída” e são listadas em **Metodologia & dados**.
 
 O gate `etl/validacao.py` aplica a referência numérica (1451/132/107) só quando o
-campus de referência usa o **mapeamento padrão**; com mapeamento próprio, ele roda
-checagens estruturais e exige que não haja situações pendentes.
+campus de referência está presente e usa o **mapeamento padrão em todas as suas
+fontes**; sem PN ou com mapeamento próprio, apenas essa comparação é ignorada.
+As checagens gerais e a rejeição de pendências permanecem para toda a base.
 
 > Como cada campus pode definir a saída de forma diferente, comparar ou somar campi
 > exige cautela — o dashboard avisa quando os mapeamentos divergem.
+
+## Testes de regressão (execução manual)
+
+Os testes usam somente fixtures sintéticas e diretórios temporários, sem abrir
+planilhas privadas. Requerem as dependências Python já utilizadas pelo ETL
+(`pandas`, `openpyxl`) e, para a rota, as dependências de desenvolvimento do projeto
+(incluindo `typescript`) e o runner nativo `node:test`:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --test tests/test_confirmar.cjs
+```
+
+Cobrem outro campus sem PN, PN padrão/próprio, múltiplos campi/fontes,
+pendências, divergências de metadados/vínculos e preservação/rollback dos JSON.
+Os testes da confirmação exercitam a rota com filesystem real sintético e mocks
+da inspeção/ETL: rollback, ausência de mapeamento anterior, colisão e sucesso.
+Não substituem um teste integrado da importação no Next.js.
+
+**Esta correção foi preparada sem executar testes ou build, por decisão explícita
+do responsável. Não há alegação de testes aprovados; execute-os antes de implantar.**
 
 ## Observações metodológicas
 

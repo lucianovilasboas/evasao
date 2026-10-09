@@ -15,7 +15,7 @@ export function lerMapeamentos(): Mapeamentos {
 }
 
 export function salvarMapeamento(arquivo: string, mapeamento: MapeamentoArquivo): void {
-  const atuais = lerMapeamentos()
+  const atuais = { ...lerMapeamentos() }
   atuais[arquivo] = mapeamento
   fs.mkdirSync(path.dirname(ARQUIVO), { recursive: true })
   fs.writeFileSync(ARQUIVO, JSON.stringify(atuais, null, 2))
