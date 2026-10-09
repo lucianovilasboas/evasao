@@ -1,0 +1,31 @@
+# Dashboard de evasão IFMG — Campus Ponte Nova.
+# Exposto nas redes ZeroTier e Tailscale, seguindo o padrão dos demais serviços.
+services:
+  evasao:
+    build: .
+    image: evasao-ifmg:latest
+    container_name: evasao-ifmg
+    restart: unless-stopped
+    environment:
+      PORT: "3060"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      # Ip da interface ZeroTier e da interface Tailscale do host.
+      - "${ZT_IP:-10.147.20.2}:${PORTA:-3060}:3060"
+      - "${TS_IP:-100.105.29.98}:${PORTA:-3060}:3060"
+    volumes:
+      # Dados processados pelo ETL ficam montados para atualização sem rebuild.
+      - ./dados:/app/dados
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3060/api/dados?view=meta"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# O host já esgotou os pools de rede padrão do Docker; usa sub-rede dedicada.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.201.77.0/24

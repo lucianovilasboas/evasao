@@ -1,0 +1,42 @@
+# Produção: Traefik existente, conforme o modelo do ifeventos.
+# URL: https://evasao.lucianovilasboas.com.br
+# Requer rede externa proxy, entrypoint websecure e resolver letsencrypt.
+# Não publica portas no host. Para uso local: docker-compose.dev.yml.
+services:
+  evasao:
+    build: .
+    image: evasao-ifmg:latest
+    container_name: evasao-ifmg
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    environment:
+      PORT: "3060"
+      HOSTNAME: "0.0.0.0"
+    volumes:
+      # Dados privados ficam no servidor, fora do repositório e da imagem.
+      - ./dados:/app/dados
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.evasao.rule=Host(`evasao.lucianovilasboas.com.br`)"
+      - "traefik.http.routers.evasao.entrypoints=websecure"
+      - "traefik.http.routers.evasao.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.evasao.priority=10"
+      - "traefik.http.routers.evasao.service=evasao"
+      - "traefik.http.services.evasao.loadbalancer.server.port=3060"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3060/api/dados?view=meta"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  proxy:
+    external: true

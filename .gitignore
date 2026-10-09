@@ -1,0 +1,49 @@
+# Node / Next
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
+
+# Python / ETL
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Dados privados e documentos de referência (nunca publicar)
+dados/*
+!dados/geo/
+!dados/brutos/
+dados/brutos/*
+!dados/brutos/.gitkeep
+referencia/
+*.xlsx
+*.xls
+*.csv
+*.sqlite*
+*.db
+*.pem
+*.key
+
+# Dados gerados pelo ETL (derivados; recriáveis a partir de dados/brutos)
+dados/base_temporal.json
+dados/perfis.json
+dados/meta.json
+dados/incoming/
+dados/mapeamentos.json
+dados/config.json
+
+# Ambiente / segredos
+.env
+.env.*
+!.env.example
+
+# SO
+.DS_Store
+Thumbs.db
+
+# Artefatos de teste/playwright
+.playwright-mcp/
+*.png

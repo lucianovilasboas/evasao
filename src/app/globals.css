@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+}
+
+:root {
+  --background: #f7fafc;
+  --foreground: #1f2937;
+  --card: #ffffff;
+  --card-foreground: #1f2937;
+  --primary: #17365d;
+  --primary-foreground: #ffffff;
+  --muted: #eef5fb;
+  --muted-foreground: #607385;
+  --accent: #2f75b5;
+  --border: #d6e2ef;
+  --input: #a9bfd6;
+  --ring: #2f75b5;
+  --destructive: #c00000;
+  --chart-1: #17365d;
+  --chart-2: #5b9bd5;
+  --chart-3: #c00000;
+  --chart-4: #7030a0;
+  --chart-5: #e3a008;
+  --radius: 0.625rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
